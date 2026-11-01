@@ -169,23 +169,71 @@ class _LoginPageState extends State<LoginPage>{
   final username=TextEditingController(), name=TextEditingController(), pin=TextEditingController();
   bool setup=false, busy=false;
   @override void initState(){super.initState();Store.staffCount().then((n){if(mounted)setState(()=>setup=n==0);});}
-  @override Widget build(BuildContext context)=>Directionality(textDirection:ui.TextDirection.rtl,child:Scaffold(body:Center(child:SingleChildScrollView(padding:const EdgeInsets.all(24),child:ConstrainedBox(constraints:const BoxConstraints(maxWidth:420),child:Card(child:Padding(padding:const EdgeInsets.all(22),child:Column(mainAxisSize:MainAxisSize.min,children:[
-    const Icon(Icons.account_balance_wallet,size:52,color:Color(0xFF145A48)),const SizedBox(height:12),Text(setup?'إعداد حساب المدير':'تسجيل الدخول',style:Theme.of(context).textTheme.headlineSmall),const SizedBox(height:18),
-    if(setup) TextField(controller:name,decoration:const InputDecoration(labelText:'اسم المدير الكامل')),
-    TextField(controller:username,decoration:const InputDecoration(labelText:'اسم المستخدم')),
-    TextField(controller:pin,obscureText:true,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'رمز PIN (4 أرقام على الأقل)')),
-    const SizedBox(height:18),SizedBox(width:double.infinity,child:FilledButton(onPressed:busy?null:()async{
-      if(username.text.trim().isEmpty||pin.text.length<4||(setup&&name.text.trim().isEmpty)){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('أكمل البيانات، والرمز لا يقل عن 4 أرقام.')));return;}
-      setState(()=>busy=true);
-      try{
-        if(setup){await Store.addStaff(username.text,name.text,pin.text,'مدير');await Store.audit(name.text,'إنشاء حساب المدير','إعداد أول تشغيل');}
-        final u=await Store.login(username.text,pin.text);
-        if(u!=null){await Store.audit(u['full_name'].toString(),'تسجيل دخول','دخول ناجح');if(mounted)widget.onLogin(u);}else if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('بيانات الدخول غير صحيحة.')));}
-      }catch(_){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اسم المستخدم مستخدم أو حدث خطأ.')));}
-      if(mounted)setState(()=>busy=false);
-    },child:Text(setup?'إنشاء المدير والدخول':'دخول'))),
-    const SizedBox(height:10),const Text('الحسابات محفوظة على هذا الجهاز فقط. احتفظ برمزك ولا تشاركه.',textAlign:TextAlign.center,style:TextStyle(fontSize:12,color:Colors.black54))
-  ])))))));
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,
+      child: Scaffold(
+        body: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(22),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.account_balance_wallet, size: 52, color: Color(0xFF145A48)),
+                      const SizedBox(height: 12),
+                      Text(setup ? 'إعداد حساب المدير' : 'تسجيل الدخول', style: Theme.of(context).textTheme.headlineSmall),
+                      const SizedBox(height: 18),
+                      if (setup) TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم المدير الكامل')),
+                      TextField(controller: username, decoration: const InputDecoration(labelText: 'اسم المستخدم')),
+                      TextField(controller: pin, obscureText: true, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رمز PIN (4 أرقام على الأقل)')),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: busy ? null : () async {
+                            if (username.text.trim().isEmpty || pin.text.length < 4 || (setup && name.text.trim().isEmpty)) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أكمل البيانات، والرمز لا يقل عن 4 أرقام.')));
+                              return;
+                            }
+                            setState(() => busy = true);
+                            try {
+                              if (setup) {
+                                await Store.addStaff(username.text, name.text, pin.text, 'مدير');
+                                await Store.audit(name.text, 'إنشاء حساب المدير', 'إعداد أول تشغيل');
+                              }
+                              final u = await Store.login(username.text, pin.text);
+                              if (u != null) {
+                                await Store.audit(u['full_name'].toString(), 'تسجيل دخول', 'دخول ناجح');
+                                if (mounted) widget.onLogin(u);
+                              } else if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('بيانات الدخول غير صحيحة.')));
+                              }
+                            } catch (_) {
+                              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اسم المستخدم مستخدم أو حدث خطأ.')));
+                            }
+                            if (mounted) setState(() => busy = false);
+                          },
+                          child: Text(setup ? 'إنشاء المدير والدخول' : 'دخول'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text('الحسابات محفوظة على هذا الجهاز فقط. احتفظ برمزك ولا تشاركه.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Colors.black54)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MainPage extends StatefulWidget {
