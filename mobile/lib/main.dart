@@ -219,7 +219,6 @@ class Dashboard extends StatelessWidget {
           if (totals.isEmpty) const Text('لا توجد مبالغ مسجلة بعد', style: TextStyle(color: Colors.black54)),
           ...totals.entries.map((e) => ListTile(dense: true, contentPadding: EdgeInsets.zero, leading: const Icon(Icons.account_balance_wallet_outlined), title: Text(e.key), trailing: Text(NumberFormat('#,##0.##').format(e.value), style: const TextStyle(fontWeight: FontWeight.bold)))),
         ]))),
-        ]),
         const SizedBox(height: 14),
         const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('تنبيه'), subtitle: Text('الإشعارات والمزامنة السحابية غير مفعّلة في هذه النسخة. اختبر التطبيق قبل إدخال بيانات حقيقية.'))),
       ]);
@@ -402,24 +401,102 @@ class ActivityLog extends StatelessWidget {
 
 class StaffPage extends StatefulWidget {
   const StaffPage({super.key});
-  @override State<StaffPage> createState()=>_StaffPageState();
+  @override State<StaffPage> createState() => _StaffPageState();
 }
-class _StaffPageState extends State<StaffPage>{
-  int refresh=0;
+class _StaffPageState extends State<StaffPage> {
+  int refresh = 0;
+
   Future<void> add() async {
-    final user=TextEditingController(),name=TextEditingController(),pin=TextEditingController();
-    String role='موظف';
-    await showDialog(context:context,builder:(x)=>StatefulBuilder(builder:(x,setLocal)=>Directionality(textDirection:ui.TextDirection.rtl,child:AlertDialog(title:const Text('إضافة موظف'),content:Column(mainAxisSize:MainAxisSize.min,children:[
-      textField(name,'اسم الموظف'),textField(user,'اسم المستخدم'),textField(pin,'رمز PIN (4 أرقام على الأقل)'),
-      DropdownButtonFormField<String>(value:role,decoration:const InputDecoration(labelText:'الصلاحية'),items:const [DropdownMenuItem(value:'موظف',child:Text('موظف')),DropdownMenuItem(value:'مدير',child:Text('مدير'))],onChanged:(v)=>setLocal(()=>role=v??'موظف'))
-    ]),actions:[TextButton(onPressed:()=>Navigator.pop(x),child:const Text('إلغاء')),FilledButton(onPressed:()async{
-      if(name.text.trim().isEmpty||user.text.trim().isEmpty||pin.text.length<4){ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content:Text('أكمل البيانات ورمز PIN من 4 أرقام على الأقل.')));return;}
-      try{await Store.addStaff(user.text,name.text,pin.text,role);await Store.audit('المدير','إضافة مستخدم',user.text+' • '+role);if(x.mounted)Navigator.pop(x);if(mounted)setState(()=>refresh++);}catch(_){ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content:Text('اسم المستخدم موجود مسبقًا.')));}
-    },child:const Text('حفظ'))]))));
+    final username = TextEditingController();
+    final name = TextEditingController();
+    final pin = TextEditingController();
+    String role = 'موظف';
+    await showDialog(context: context, builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setLocal) => Directionality(
+        textDirection: ui.TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('إضافة موظف'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            textField(name, 'اسم الموظف'),
+            textField(username, 'اسم المستخدم'),
+            textField(pin, 'رمز PIN (4 أرقام على الأقل)'),
+            DropdownButtonFormField<String>(
+              value: role,
+              decoration: const InputDecoration(labelText: 'الصلاحية'),
+              items: const [
+                DropdownMenuItem(value: 'موظف', child: Text('موظف')),
+                DropdownMenuItem(value: 'مدير', child: Text('مدير')),
+              ],
+              onChanged: (value) => setLocal(() => role = value ?? 'موظف'),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إلغاء')),
+            FilledButton(
+              onPressed: () async {
+                if (name.text.trim().isEmpty || username.text.trim().isEmpty || pin.text.length < 4) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('أكمل البيانات ورمز PIN من 4 أرقام على الأقل.')));
+                  return;
+                }
+                try {
+                  await Store.addStaff(username.text, name.text, pin.text, role);
+                  await Store.audit('المدير', 'إضافة مستخدم', username.text + ' • ' + role);
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                  if (mounted) setState(() => refresh++);
+                } catch (_) {
+                  if (dialogContext.mounted) ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('اسم المستخدم موجود مسبقًا.')));
+                }
+              },
+              child: const Text('حفظ'),
+            ),
+          ],
+        ),
+      ),
+    ));
   }
-  @override Widget build(BuildContext context)=>Column(children:[
-    Padding(padding:const EdgeInsets.all(12),child:FilledButton.icon(onPressed:add,icon:const Icon(Icons.person_add),label:const Text('إضافة موظف'))),
-    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}'),trailing:IconButton(icon:Icon((r['active'] as int)==1?Icons.pause_circle_outline:Icons.play_circle_outline),tooltip:(r['active'] as int)==1?'إيقاف الحساب':'تفعيل الحساب',onPressed:()async{final active=(r['active'] as int)!=1;if(!active && r['role']=='مدير' && await Store.activeAdminCount()<=1){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('لا يمكن إيقاف آخر حساب مدير نشط.')));return;}await Store.setStaffActive(r['id'] as int,active);await Store.audit('المدير',active?'تفعيل مستخدم':'إيقاف مستخدم',r['username'].toString());if(mounted)setState(()=>refresh++);}))))).toList());}))
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    Padding(
+      padding: const EdgeInsets.all(12),
+      child: FilledButton.icon(onPressed: add, icon: const Icon(Icons.person_add), label: const Text('إضافة موظف')),
+    ),
+    Expanded(
+      child: FutureBuilder<List<Map<String, Object?>>>(
+        key: ValueKey(refresh),
+        future: Store.staff(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+          final rows = snapshot.data ?? [];
+          if (rows.isEmpty) return const Center(child: Text('لا يوجد موظفون.'));
+          return ListView(
+            children: rows.map<Widget>((row) {
+              final active = (row['active'] as int) == 1;
+              return Card(
+                child: ListTile(
+                  leading: Icon(row['role'] == 'مدير' ? Icons.admin_panel_settings : Icons.person),
+                  title: Text(row['full_name'].toString()),
+                  subtitle: Text('${row['username']} • ${row['role']} • ${active ? 'نشط' : 'موقوف'}'),
+                  trailing: IconButton(
+                    icon: Icon(active ? Icons.pause_circle_outline : Icons.play_circle_outline),
+                    tooltip: active ? 'إيقاف الحساب' : 'تفعيل الحساب',
+                    onPressed: () async {
+                      if (active && row['role'] == 'مدير' && await Store.activeAdminCount() <= 1) {
+                        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يمكن إيقاف آخر حساب مدير نشط.')));
+                        return;
+                      }
+                      await Store.setStaffActive(row['id'] as int, !active);
+                      await Store.audit('المدير', active ? 'إيقاف مستخدم' : 'تفعيل مستخدم', row['username'].toString());
+                      if (mounted) setState(() => refresh++);
+                    },
+                  ),
+                ),
+              );
+            }).toList(),
+          );
+        },
+      ),
+    ),
   ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
