@@ -1087,7 +1087,7 @@ class _StaffPageState extends State<StaffPage> {
             TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إلغاء')),
             FilledButton(
               onPressed: () async {
-                if (name.text.trim().isEmpty || username.text.trim().isEmpty || !RegExp(r'^\d{4,}) {
+                if (name.text.trim().isEmpty || username.text.trim().isEmpty || !RegExp(r'^[0-9]{4,}$').hasMatch(pin.text)) {
                   ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('أكمل البيانات ورمز PIN من 4 أرقام على الأقل.')));
                   return;
                 }
@@ -1153,10 +1153,6 @@ class _StaffPageState extends State<StaffPage> {
   ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
-).hasMatch(pin.text)) {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(const SnackBar(content: Text('أكمل البيانات ورمز PIN من 4 أرقام على الأقل.')));
-                  return;
-                }
                 try {
                   await Store.addStaff(username.text, name.text, pin.text, role);
                   await Store.audit(widget.actor, 'إضافة مستخدم', username.text + ' • ' + role);
