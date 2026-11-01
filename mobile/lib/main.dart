@@ -1,4 +1,6 @@
 import 'dart:ui' as ui;
+import 'package:crypto/crypto.dart';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -18,10 +20,18 @@ class Store {
     final dir = await getDatabasesPath();
     _database = await openDatabase(
       p.join(dir, 'alquood_remit.db'),
-      version: 1,
+      version: 2,
       onCreate: (d, v) async {
         await d.execute('CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, account_no TEXT UNIQUE, full_name TEXT NOT NULL, phone TEXT, identity_no TEXT, address TEXT, created_at TEXT NOT NULL)');
         await d.execute('CREATE TABLE remittances(id INTEGER PRIMARY KEY AUTOINCREMENT, reference_no TEXT UNIQUE, sender_name TEXT NOT NULL, receiver_name TEXT NOT NULL, receiver_phone TEXT, customer_id INTEGER, amount REAL NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL, transfer_date TEXT NOT NULL, notes TEXT)');
+        await d.execute('CREATE TABLE staff(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL, pin_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)');
+        await d.execute('CREATE TABLE audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, staff_name TEXT NOT NULL, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL)');
+      },
+      onUpgrade: (d, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await d.execute('CREATE TABLE staff(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL, pin_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)');
+          await d.execute('CREATE TABLE audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, staff_name TEXT NOT NULL, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL)');
+        }
       },
     );
     return _database!;
@@ -29,6 +39,16 @@ class Store {
 
   static Future<List<Map<String, Object?>>> customers() async => (await db).query('customers', orderBy: 'full_name');
   static Future<List<Map<String, Object?>>> transfers() async => (await db).query('remittances', orderBy: 'id DESC');
+  static String pinHash(String pin) => sha256.convert(utf8.encode(pin)).toString();
+  static Future<int> staffCount() async => Sqflite.firstIntValue(await (await db).rawQuery('SELECT COUNT(*) FROM staff')) ?? 0;
+  static Future<int> addStaff(String username, String name, String pin, String role) async => (await db).insert('staff', {'username': username.trim(), 'full_name': name.trim(), 'pin_hash': pinHash(pin), 'role': role, 'active': 1, 'created_at': DateTime.now().toIso8601String()});
+  static Future<Map<String,Object?>?> login(String username, String pin) async {
+    final rows = await (await db).query('staff', where: 'username=? AND pin_hash=? AND active=1', whereArgs: [username.trim(), pinHash(pin)], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+  static Future<List<Map<String,Object?>>> staff() async => (await db).query('staff', orderBy: 'id');
+  static Future<List<Map<String,Object?>>> logs() async => (await db).query('audit_logs', orderBy: 'id DESC', limit: 300);
+  static Future<void> audit(String actor, String action, String details) async => (await db).insert('audit_logs', {'staff_name': actor, 'action': action, 'details': details, 'created_at': DateTime.now().toIso8601String()});
   static Future<int> addCustomer(Map<String, Object?> row) async => (await db).insert('customers', row);
   static Future<int> addTransfer(Map<String, Object?> row) async => (await db).insert('remittances', row);
   static Future<List<Map<String, Object?>>> statement(int id) async => (await db).query('remittances', where: 'customer_id=?', whereArgs: [id], orderBy: 'id DESC');
@@ -67,17 +87,62 @@ class RemitApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     title: 'ALQUOOD REMIT',
     theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF145A48)), scaffoldBackgroundColor: const Color(0xFFF4F7F5), appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF145A48), foregroundColor: Colors.white)),
-    home: const MainPage(),
+    home: const AuthGate(),
   );
 }
 
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+  @override State<AuthGate> createState() => _AuthGateState();
+}
+class _AuthGateState extends State<AuthGate> {
+  Map<String,Object?>? user;
+  bool loading = true;
+  @override void initState(){ super.initState(); Store.staffCount().then((n){ if(mounted)setState(()=>loading=false); }); }
+  @override Widget build(BuildContext context) {
+    if (loading) return const Scaffold(body: Center(child:CircularProgressIndicator()));
+    if (user != null) return MainPage(user:user!, onLogout:()=>setState(()=>user=null));
+    return LoginPage(onLogin:(u)=>setState(()=>user=u));
+  }
+}
+
+class LoginPage extends StatefulWidget {
+  final ValueChanged<Map<String,Object?>> onLogin;
+  const LoginPage({super.key,required this.onLogin});
+  @override State<LoginPage> createState()=>_LoginPageState();
+}
+class _LoginPageState extends State<LoginPage>{
+  final username=TextEditingController(), name=TextEditingController(), pin=TextEditingController();
+  bool setup=false, busy=false;
+  @override void initState(){super.initState();Store.staffCount().then((n){if(mounted)setState(()=>setup=n==0);});}
+  @override Widget build(BuildContext context)=>Directionality(textDirection:ui.TextDirection.rtl,child:Scaffold(body:Center(child:SingleChildScrollView(padding:const EdgeInsets.all(24),child:ConstrainedBox(constraints:const BoxConstraints(maxWidth:420),child:Card(child:Padding(padding:const EdgeInsets.all(22),child:Column(mainAxisSize:MainAxisSize.min,children:[
+    const Icon(Icons.account_balance_wallet,size:52,color:Color(0xFF145A48)),const SizedBox(height:12),Text(setup?'إعداد حساب المدير':'تسجيل الدخول',style:Theme.of(context).textTheme.headlineSmall),const SizedBox(height:18),
+    if(setup) TextField(controller:name,decoration:const InputDecoration(labelText:'اسم المدير الكامل')),
+    TextField(controller:username,decoration:const InputDecoration(labelText:'اسم المستخدم')),
+    TextField(controller:pin,obscureText:true,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'رمز PIN (4 أرقام على الأقل)')),
+    const SizedBox(height:18),SizedBox(width:double.infinity,child:FilledButton(onPressed:busy?null:()async{
+      if(username.text.trim().isEmpty||pin.text.length<4||(setup&&name.text.trim().isEmpty)){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('أكمل البيانات، والرمز لا يقل عن 4 أرقام.')));return;}
+      setState(()=>busy=true);
+      try{
+        if(setup){await Store.addStaff(username.text,name.text,pin.text,'مدير');await Store.audit(name.text,'إنشاء حساب المدير','إعداد أول تشغيل');}
+        final u=await Store.login(username.text,pin.text);
+        if(u!=null){if(mounted)widget.onLogin(u);}else if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('بيانات الدخول غير صحيحة.')));}
+      }catch(_){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اسم المستخدم مستخدم أو حدث خطأ.')));}
+      if(mounted)setState(()=>busy=false);
+    },child:Text(setup?'إنشاء المدير والدخول':'دخول'))),
+    const SizedBox(height:10),const Text('الحسابات محفوظة على هذا الجهاز فقط. احتفظ برمزك ولا تشاركه.',textAlign:TextAlign.center,style:TextStyle(fontSize:12,color:Colors.black54))
+  ])))))));
+}
+
 class MainPage extends StatefulWidget {
-  const MainPage({super.key});
+  final Map<String,Object?> user; final VoidCallback onLogout;
+  const MainPage({super.key,required this.user,required this.onLogout});
   @override
   State<MainPage> createState() => _MainPageState();
 }
 class _MainPageState extends State<MainPage> {
   int page = 0, version = 0;
+  bool get isAdmin => widget.user['role']=='مدير';
   void reload() => setState(() => version++);
   Future<void> copyBackup() async {
     final csv = await Store.exportCsv();
@@ -87,32 +152,36 @@ class _MainPageState extends State<MainPage> {
   }
   @override
   Widget build(BuildContext context) {
-    final names = ['الرئيسية', 'العملاء', 'الحوالات'];
+    final names = ['الرئيسية', 'العملاء', 'الحوالات', 'سجل النشاط', if(isAdmin) 'الموظفون'];
     return Directionality(textDirection: ui.TextDirection.rtl, child: Scaffold(
-      appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [IconButton(tooltip: 'نسخ نسخة احتياطية', onPressed: copyBackup, icon: const Icon(Icons.backup_outlined)), IconButton(tooltip: 'تحديث', onPressed: reload, icon: const Icon(Icons.refresh))]),
+      appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [if(isAdmin) IconButton(tooltip: 'نسخ نسخة احتياطية', onPressed: copyBackup, icon: const Icon(Icons.backup_outlined)), IconButton(tooltip: 'تحديث', onPressed: reload, icon: const Icon(Icons.refresh)), IconButton(tooltip:'خروج',onPressed:widget.onLogout,icon:const Icon(Icons.logout))]),
       body: IndexedStack(index: page, children: [
         Dashboard(key: ValueKey('home' + version.toString()), go: (v) => setState(() => page = v)),
         CustomerList(key: ValueKey('customers' + version.toString())),
-        TransferList(key: ValueKey('transfers' + version.toString())),
+        TransferList(key: ValueKey('transfers' + version.toString()), actor: widget.user['full_name'].toString()),
+        ActivityLog(key: ValueKey('logs'+version.toString())),
+        if(isAdmin) StaffPage(key: ValueKey('staff'+version.toString())),
       ]),
-      floatingActionButton: page == 1 || page == 2 ? FloatingActionButton.extended(
+      floatingActionButton: (page == 1 || page == 2) ? FloatingActionButton.extended(
         onPressed: () async {
           if (page == 1) {
-            await customerForm(context);
+            await customerForm(context, widget.user['full_name'].toString());
           } else {
             final cs = await Store.customers();
             if (!context.mounted) return;
-            await transferForm(context, cs);
+            await transferForm(context, cs, widget.user['full_name'].toString());
           }
           reload();
         },
         icon: const Icon(Icons.add),
         label: Text(page == 1 ? 'إضافة عميل' : 'إضافة حوالة'),
       ) : null,
-      bottomNavigationBar: NavigationBar(selectedIndex: page, onDestinationSelected: (v) => setState(() => page = v), destinations: const [
-        NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'الرئيسية'),
-        NavigationDestination(icon: Icon(Icons.people_outline), label: 'العملاء'),
-        NavigationDestination(icon: Icon(Icons.swap_horiz), label: 'الحوالات'),
+      bottomNavigationBar: NavigationBar(selectedIndex: page, onDestinationSelected: (v) => setState(() => page = v), destinations: [
+        const NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'الرئيسية'),
+        const NavigationDestination(icon: Icon(Icons.people_outline), label: 'العملاء'),
+        const NavigationDestination(icon: Icon(Icons.swap_horiz), label: 'الحوالات'),
+        const NavigationDestination(icon: Icon(Icons.history), label: 'السجل'),
+        if(isAdmin) const NavigationDestination(icon: Icon(Icons.admin_panel_settings), label: 'الموظفون'),
       ]),
     ));
   }
@@ -187,7 +256,8 @@ class _CustomerListState extends State<CustomerList> {
 }
 
 class TransferList extends StatefulWidget {
-  const TransferList({super.key});
+  final String actor;
+  const TransferList({super.key,required this.actor});
   @override
   State<TransferList> createState() => _TransferListState();
 }
@@ -211,7 +281,7 @@ class _TransferListState extends State<TransferList> {
         )),
         Expanded(child: s.connectionState == ConnectionState.waiting ? const Center(child: CircularProgressIndicator()) : rows.isEmpty ? const Center(child: Text('لا توجد حوالات مسجلة.')) : ListView.builder(itemCount: rows.length, itemBuilder: (c, i) {
           final r = rows[i];
-          return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const CircleAvatar(child: Icon(Icons.swap_horiz)), title: Text(r['receiver_name'].toString()), subtitle: Text('رقم: ' + r['reference_no'].toString() + '\nمن: ' + r['sender_name'].toString() + ' • ' + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()), isThreeLine: true, onTap: () => transferDetails(context, r)));
+          return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const CircleAvatar(child: Icon(Icons.swap_horiz)), title: Text(r['receiver_name'].toString()), subtitle: Text('رقم: ' + r['reference_no'].toString() + '\nمن: ' + r['sender_name'].toString() + ' • ' + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()), isThreeLine: true, onTap: () => transferDetails(context, r, widget.actor)));
         })),
       ]);
     },
@@ -220,7 +290,7 @@ class _TransferListState extends State<TransferList> {
 
 Widget textField(TextEditingController c, String label, {bool numeric = false}) => Padding(padding: const EdgeInsets.only(bottom: 9), child: TextField(controller: c, keyboardType: numeric ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text, decoration: InputDecoration(labelText: label)));
 
-Future<void> customerForm(BuildContext context) async {
+Future<void> customerForm(BuildContext context, String actor) async {
   final name = TextEditingController(), phone = TextEditingController(), identity = TextEditingController(), address = TextEditingController(), account = TextEditingController();
   await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: const Text('عميل جديد'),
@@ -231,6 +301,7 @@ Future<void> customerForm(BuildContext context) async {
         if (name.text.trim().isEmpty) return;
         try {
           await Store.addCustomer({'full_name': name.text.trim(), 'phone': phone.text.trim(), 'identity_no': identity.text.trim(), 'address': address.text.trim(), 'account_no': account.text.trim().isEmpty ? 'AC-' + DateTime.now().millisecondsSinceEpoch.toString() : account.text.trim(), 'created_at': DateTime.now().toIso8601String()});
+          await Store.audit(actor,'إضافة عميل',name.text.trim());
           if (x.mounted) Navigator.pop(x);
         } catch (_) {
           if (x.mounted) ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content: Text('رقم الحساب مستخدم أو حدث خطأ في الحفظ.')));
@@ -240,7 +311,7 @@ Future<void> customerForm(BuildContext context) async {
   )));
 }
 
-Future<void> transferForm(BuildContext context, List<Map<String, Object?>> customers) async {
+Future<void> transferForm(BuildContext context, List<Map<String, Object?>> customers, String actor) async {
   final ref = TextEditingController(text: 'TR-' + DateTime.now().millisecondsSinceEpoch.toString()), sender = TextEditingController(), receiver = TextEditingController(), phone = TextEditingController(), amount = TextEditingController(), notes = TextEditingController();
   int? customerId;
   String currency = 'YER', status = 'قيد الانتظار';
@@ -264,6 +335,7 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
         }
         try {
           await Store.addTransfer({'reference_no': ref.text.trim(), 'sender_name': sender.text.trim(), 'receiver_name': receiver.text.trim(), 'receiver_phone': phone.text.trim(), 'customer_id': customerId, 'amount': n, 'currency': currency, 'status': status, 'transfer_date': DateTime.now().toIso8601String(), 'notes': notes.text.trim()});
+          await Store.audit(actor,'إضافة حوالة',ref.text.trim()+' • '+receiver.text.trim());
           if (x.mounted) Navigator.pop(x);
         } catch (_) {
           if (x.mounted) ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content: Text('رقم الحوالة مكرر أو حدث خطأ في الحفظ.')));
@@ -287,14 +359,54 @@ Future<void> customerDetails(BuildContext context, Map<String, Object?> c) async
   )));
 }
 
-Future<void> transferDetails(BuildContext context, Map<String, Object?> r) async {
+Future<void> transferDetails(BuildContext context, Map<String, Object?> r, String actor) async {
   await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: Text('حوالة ' + r['reference_no'].toString()),
     content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
       detail('المرسل', r['sender_name']), detail('المستلم', r['receiver_name']), detail('هاتف المستلم', r['receiver_phone']),
       detail('المبلغ', NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString()), detail('الحالة', r['status']), detail('التاريخ', r['transfer_date']), detail('ملاحظات', r['notes']),
     ]),
-    actions: [TextButton(onPressed: () => Navigator.pop(x), child: const Text('إغلاق'))],
+    actions: [
+      TextButton(onPressed: () async {
+        final receipt = 'ALQUOOD REMIT\\nإيصال حوالة\\n----------------------\\nرقم الحوالة: ${r['reference_no']}\\nالمرسل: ${r['sender_name']}\\nالمستلم: ${r['receiver_name']}\\nهاتف المستلم: ${r['receiver_phone'] ?? '—'}\\nالمبلغ: ${NumberFormat('#,##0.##').format(r['amount'])} ${r['currency']}\\nالحالة: ${r['status']}\\nالتاريخ: ${r['transfer_date']}\\nالموظف: $actor\\n----------------------\\nيرجى الاحتفاظ بهذا الإيصال';
+        await Clipboard.setData(ClipboardData(text:receipt));
+        await Store.audit(actor,'نسخ إيصال',r['reference_no'].toString());
+        if(x.mounted){Navigator.pop(x);ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تم نسخ الإيصال. يمكنك لصقه وطباعته.')));}
+      }, child: const Text('نسخ الإيصال')),
+      TextButton(onPressed: () => Navigator.pop(x), child: const Text('إغلاق')),
+    ],
   )));
+}
+
+class ActivityLog extends StatelessWidget {
+  const ActivityLog({super.key});
+  @override Widget build(BuildContext context)=>FutureBuilder<List<Map<String,Object?>>>(future:Store.logs(),builder:(context,s){
+    final rows=s.data??[];
+    if(s.connectionState==ConnectionState.waiting)return const Center(child:CircularProgressIndicator());
+    return rows.isEmpty?const Center(child:Text('لا توجد أنشطة مسجلة بعد')):ListView.builder(itemCount:rows.length,itemBuilder:(c,i){final r=rows[i];return Card(margin:const EdgeInsets.symmetric(horizontal:12,vertical:4),child:ListTile(leading:const Icon(Icons.history),title:Text(r['action'].toString()),subtitle:Text('${r['staff_name']} • ${r['details']??''}\\n${r['created_at']}')));});
+  });
+}
+
+class StaffPage extends StatefulWidget {
+  const StaffPage({super.key});
+  @override State<StaffPage> createState()=>_StaffPageState();
+}
+class _StaffPageState extends State<StaffPage>{
+  int refresh=0;
+  Future<void> add() async {
+    final user=TextEditingController(),name=TextEditingController(),pin=TextEditingController();
+    String role='موظف';
+    await showDialog(context:context,builder:(x)=>StatefulBuilder(builder:(x,setLocal)=>Directionality(textDirection:ui.TextDirection.rtl,child:AlertDialog(title:const Text('إضافة موظف'),content:Column(mainAxisSize:MainAxisSize.min,children:[
+      textField(name,'اسم الموظف'),textField(user,'اسم المستخدم'),textField(pin,'رمز PIN (4 أرقام على الأقل)'),
+      DropdownButtonFormField<String>(value:role,decoration:const InputDecoration(labelText:'الصلاحية'),items:const [DropdownMenuItem(value:'موظف',child:Text('موظف')),DropdownMenuItem(value:'مدير',child:Text('مدير'))],onChanged:(v)=>setLocal(()=>role=v??'موظف'))
+    ]),actions:[TextButton(onPressed:()=>Navigator.pop(x),child:const Text('إلغاء')),FilledButton(onPressed:()async{
+      if(name.text.trim().isEmpty||user.text.trim().isEmpty||pin.text.length<4){ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content:Text('أكمل البيانات ورمز PIN من 4 أرقام على الأقل.')));return;}
+      try{await Store.addStaff(user.text,name.text,pin.text,role);await Store.audit('المدير','إضافة مستخدم',user.text+' • '+role);if(x.mounted)Navigator.pop(x);if(mounted)setState(()=>refresh++);}catch(_){ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content:Text('اسم المستخدم موجود مسبقًا.')));}
+    },child:const Text('حفظ'))]))));
+  }
+  @override Widget build(BuildContext context)=>Column(children:[
+    Padding(padding:const EdgeInsets.all(12),child:FilledButton.icon(onPressed:add,icon:const Icon(Icons.person_add),label:const Text('إضافة موظف'))),
+    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}')))).toList());}))
+  ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
