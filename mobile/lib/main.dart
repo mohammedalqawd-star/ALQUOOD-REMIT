@@ -1,5 +1,6 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
@@ -35,9 +36,27 @@ class Store {
     final r = await (await db).rawQuery('SELECT COUNT(*) AS n FROM ' + table);
     return Sqflite.firstIntValue(r) ?? 0;
   }
-  static Future<double> total() async {
-    final r = await (await db).rawQuery("SELECT SUM(amount) AS n FROM remittances WHERE status != 'ملغاة'");
-    return (r.first['n'] as num?)?.toDouble() ?? 0;
+  static Future<Map<String, double>> totalsByCurrency() async {
+    final rows = await (await db).rawQuery("SELECT currency, SUM(amount) AS total FROM remittances WHERE status != 'ملغاة' GROUP BY currency");
+    return {for (final r in rows) r['currency'].toString(): (r['total'] as num).toDouble()};
+  }
+  static Future<int> countByStatus(String status) async {
+    final rows = await (await db).rawQuery('SELECT COUNT(*) AS n FROM remittances WHERE status=?', [status]);
+    return Sqflite.firstIntValue(rows) ?? 0;
+  }
+  static Future<String> exportCsv() async {
+    final d = await db;
+    final customers = await d.query('customers', orderBy: 'id');
+    final transfers = await d.query('remittances', orderBy: 'id');
+    String cell(Object? value) => '"' + (value?.toString() ?? '').replaceAll('"', '""') + '"';
+    final out = <String>['النوع,المعرف,رقم الحساب/الحوالة,الاسم/المرسل,المستلم,الهاتف,الهوية,العنوان,المبلغ,العملة,الحالة,التاريخ,ملاحظات'];
+    for (final c in customers) {
+      out.add([cell('عميل'),cell(c['id']),cell(c['account_no']),cell(c['full_name']),cell(''),cell(c['phone']),cell(c['identity_no']),cell(c['address']),cell(''),cell(''),cell(''),cell(c['created_at']),cell('')].join(','));
+    }
+    for (final t in transfers) {
+      out.add([cell('حوالة'),cell(t['id']),cell(t['reference_no']),cell(t['sender_name']),cell(t['receiver_name']),cell(t['receiver_phone']),cell(''),cell(''),cell(t['amount']),cell(t['currency']),cell(t['status']),cell(t['transfer_date']),cell(t['notes'])].join(','));
+    }
+    return '\\uFEFF' + out.join('\\n');
   }
 }
 
@@ -60,11 +79,17 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   int page = 0, version = 0;
   void reload() => setState(() => version++);
+  Future<void> copyBackup() async {
+    final csv = await Store.exportCsv();
+    await Clipboard.setData(ClipboardData(text: csv));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم نسخ نسخة CSV الاحتياطية. الصقها في ملف واحفظها بأمان.')));
+  }
   @override
   Widget build(BuildContext context) {
     final names = ['الرئيسية', 'العملاء', 'الحوالات'];
     return Directionality(textDirection: ui.TextDirection.rtl, child: Scaffold(
-      appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [IconButton(onPressed: reload, icon: const Icon(Icons.refresh))]),
+      appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [IconButton(tooltip: 'نسخ نسخة احتياطية', onPressed: copyBackup, icon: const Icon(Icons.backup_outlined)), IconButton(tooltip: 'تحديث', onPressed: reload, icon: const Icon(Icons.refresh))]),
       body: IndexedStack(index: page, children: [
         Dashboard(key: ValueKey('home' + version.toString()), go: (v) => setState(() => page = v)),
         CustomerList(key: ValueKey('customers' + version.toString())),
@@ -98,9 +123,10 @@ class Dashboard extends StatelessWidget {
   const Dashboard({super.key, required this.go});
   @override
   Widget build(BuildContext context) => FutureBuilder<List<Object>>(
-    future: Future.wait([Store.count('customers'), Store.count('remittances'), Store.total()]),
+    future: Future.wait<Object>([Store.count('customers'), Store.count('remittances'), Store.totalsByCurrency(), Store.countByStatus('مكتملة'), Store.countByStatus('قيد الانتظار')]),
     builder: (context, s) {
-      final v = s.data ?? [0, 0, 0.0];
+      final v = s.data ?? <Object>[0, 0, <String,double>{}, 0, 0];
+      final totals = v[2] as Map<String, double>;
       return ListView(padding: const EdgeInsets.all(16), children: [
         Container(padding: const EdgeInsets.all(22), decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF145A48), Color(0xFF23836A)]), borderRadius: BorderRadius.circular(20)), child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('إدارة حوالاتك بكل وضوح', style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.bold)),
@@ -111,7 +137,16 @@ class Dashboard extends StatelessWidget {
         Wrap(spacing: 10, runSpacing: 10, children: [
           metric(context, 'العملاء', v[0].toString(), Icons.people, () => go(1)),
           metric(context, 'الحوالات', v[1].toString(), Icons.receipt_long, () => go(2)),
-          metric(context, 'إجمالي المبالغ غير الملغاة', NumberFormat('#,##0.##').format(v[2]), Icons.account_balance_wallet, null, wide: true),
+          metric(context, 'الحوالات المكتملة', v[3].toString(), Icons.check_circle_outline, () => go(2)),
+          metric(context, 'قيد الانتظار', v[4].toString(), Icons.hourglass_empty, () => go(2)),
+        ]),
+        const SizedBox(height: 10),
+        Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('إجمالي الحوالات حسب العملة', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          if (totals.isEmpty) const Text('لا توجد مبالغ مسجلة بعد', style: TextStyle(color: Colors.black54)),
+          ...totals.entries.map((e) => ListTile(dense: true, contentPadding: EdgeInsets.zero, leading: const Icon(Icons.account_balance_wallet_outlined), title: Text(e.key), trailing: Text(NumberFormat('#,##0.##').format(e.value), style: const TextStyle(fontWeight: FontWeight.bold)))),
+        ]))),
         ]),
         const SizedBox(height: 14),
         const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('تنبيه'), subtitle: Text('الإشعارات والمزامنة السحابية غير مفعّلة في هذه النسخة. اختبر التطبيق قبل إدخال بيانات حقيقية.'))),
@@ -158,13 +193,22 @@ class TransferList extends StatefulWidget {
 }
 class _TransferListState extends State<TransferList> {
   String q = '';
+  String statusFilter = 'الكل';
   @override
   Widget build(BuildContext context) => FutureBuilder<List<Map<String, Object?>>>(
     future: Store.transfers(),
     builder: (context, s) {
-      final rows = (s.data ?? []).where((r) => (r['reference_no'].toString() + ' ' + r['sender_name'].toString() + ' ' + r['receiver_name'].toString() + ' ' + (r['receiver_phone'] ?? '').toString()).toLowerCase().contains(q.toLowerCase())).toList();
+      final rows = (s.data ?? []).where((r) =>
+        (statusFilter == 'الكل' || r['status'] == statusFilter) &&
+        (r['reference_no'].toString() + ' ' + r['sender_name'].toString() + ' ' + r['receiver_name'].toString() + ' ' + (r['receiver_phone'] ?? '').toString()).toLowerCase().contains(q.toLowerCase())).toList();
       return Column(children: [
-        Padding(padding: const EdgeInsets.all(12), child: TextField(onChanged: (v) => setState(() => q = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'ابحث برقم الحوالة أو الاسم'))),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 4), child: TextField(onChanged: (v) => setState(() => q = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'ابحث برقم الحوالة أو الاسم'))),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 8), child: DropdownButtonFormField<String>(
+          value: statusFilter,
+          decoration: const InputDecoration(labelText: 'تصفية حسب الحالة', prefixIcon: Icon(Icons.filter_list)),
+          items: const [DropdownMenuItem(value: 'الكل', child: Text('كل الحالات')), DropdownMenuItem(value: 'قيد الانتظار', child: Text('قيد الانتظار')), DropdownMenuItem(value: 'مكتملة', child: Text('مكتملة')), DropdownMenuItem(value: 'ملغاة', child: Text('ملغاة'))],
+          onChanged: (v) => setState(() => statusFilter = v ?? 'الكل'),
+        )),
         Expanded(child: s.connectionState == ConnectionState.waiting ? const Center(child: CircularProgressIndicator()) : rows.isEmpty ? const Center(child: Text('لا توجد حوالات مسجلة.')) : ListView.builder(itemCount: rows.length, itemBuilder: (c, i) {
           final r = rows[i];
           return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const CircleAvatar(child: Icon(Icons.swap_horiz)), title: Text(r['receiver_name'].toString()), subtitle: Text('رقم: ' + r['reference_no'].toString() + '\nمن: ' + r['sender_name'].toString() + ' • ' + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()), isThreeLine: true, onTap: () => transferDetails(context, r)));
