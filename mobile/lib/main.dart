@@ -41,6 +41,7 @@ class Store {
   static Future<List<Map<String, Object?>>> transfers() async => (await db).query('remittances', orderBy: 'id DESC');
   static String pinHash(String pin) => sha256.convert(utf8.encode(pin)).toString();
   static Future<int> staffCount() async => Sqflite.firstIntValue(await (await db).rawQuery('SELECT COUNT(*) FROM staff')) ?? 0;
+  static Future<int> activeAdminCount() async => Sqflite.firstIntValue(await (await db).rawQuery("SELECT COUNT(*) FROM staff WHERE role='مدير' AND active=1")) ?? 0;
   static Future<int> addStaff(String username, String name, String pin, String role) async => (await db).insert('staff', {'username': username.trim(), 'full_name': name.trim(), 'pin_hash': pinHash(pin), 'role': role, 'active': 1, 'created_at': DateTime.now().toIso8601String()});
   static Future<Map<String,Object?>?> login(String username, String pin) async {
     final rows = await (await db).query('staff', where: 'username=? AND pin_hash=? AND active=1', whereArgs: [username.trim(), pinHash(pin)], limit: 1);
@@ -128,7 +129,7 @@ class _LoginPageState extends State<LoginPage>{
       try{
         if(setup){await Store.addStaff(username.text,name.text,pin.text,'مدير');await Store.audit(name.text,'إنشاء حساب المدير','إعداد أول تشغيل');}
         final u=await Store.login(username.text,pin.text);
-        if(u!=null){if(mounted)widget.onLogin(u);}else if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('بيانات الدخول غير صحيحة.')));}
+        if(u!=null){await Store.audit(u['full_name'].toString(),'تسجيل دخول','دخول ناجح');if(mounted)widget.onLogin(u);}else if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('بيانات الدخول غير صحيحة.')));}
       }catch(_){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اسم المستخدم مستخدم أو حدث خطأ.')));}
       if(mounted)setState(()=>busy=false);
     },child:Text(setup?'إنشاء المدير والدخول':'دخول'))),
@@ -418,7 +419,7 @@ class _StaffPageState extends State<StaffPage>{
   }
   @override Widget build(BuildContext context)=>Column(children:[
     Padding(padding:const EdgeInsets.all(12),child:FilledButton.icon(onPressed:add,icon:const Icon(Icons.person_add),label:const Text('إضافة موظف'))),
-    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}'),trailing:IconButton(icon:Icon((r['active'] as int)==1?Icons.pause_circle_outline:Icons.play_circle_outline),tooltip:(r['active'] as int)==1?'إيقاف الحساب':'تفعيل الحساب',onPressed:()async{final active=(r['active'] as int)!=1;await Store.setStaffActive(r['id'] as int,active);await Store.audit('المدير',active?'تفعيل مستخدم':'إيقاف مستخدم',r['username'].toString());if(mounted)setState(()=>refresh++);}))))).toList());}))
+    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}'),trailing:IconButton(icon:Icon((r['active'] as int)==1?Icons.pause_circle_outline:Icons.play_circle_outline),tooltip:(r['active'] as int)==1?'إيقاف الحساب':'تفعيل الحساب',onPressed:()async{final active=(r['active'] as int)!=1;if(!active && r['role']=='مدير' && await Store.activeAdminCount()<=1){if(mounted)ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('لا يمكن إيقاف آخر حساب مدير نشط.')));return;}await Store.setStaffActive(r['id'] as int,active);await Store.audit('المدير',active?'تفعيل مستخدم':'إيقاف مستخدم',r['username'].toString());if(mounted)setState(()=>refresh++);}))))).toList());}))
   ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
