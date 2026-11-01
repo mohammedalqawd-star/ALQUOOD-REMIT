@@ -52,6 +52,7 @@ class Store {
   static Future<void> audit(String actor, String action, String details) async => (await db).insert('audit_logs', {'staff_name': actor, 'action': action, 'details': details, 'created_at': DateTime.now().toIso8601String()});
   static Future<int> addCustomer(Map<String, Object?> row) async => (await db).insert('customers', row);
   static Future<int> addTransfer(Map<String, Object?> row) async => (await db).insert('remittances', row);
+  static Future<int> updateTransferStatus(int id, String status) async => (await db).update('remittances', {'status': status}, where: 'id=?', whereArgs: [id]);
   static Future<List<Map<String, Object?>>> statement(int id) async => (await db).query('remittances', where: 'customer_id=?', whereArgs: [id], orderBy: 'id DESC');
   static Future<int> count(String table) async {
     final r = await (await db).rawQuery('SELECT COUNT(*) AS n FROM ' + table);
@@ -159,7 +160,7 @@ class _MainPageState extends State<MainPage> {
       body: IndexedStack(index: page, children: [
         Dashboard(key: ValueKey('home' + version.toString()), go: (v) => setState(() => page = v)),
         CustomerList(key: ValueKey('customers' + version.toString())),
-        TransferList(key: ValueKey('transfers' + version.toString()), actor: widget.user['full_name'].toString()),
+        TransferList(key: ValueKey('transfers' + version.toString()), actor: widget.user['full_name'].toString(), isAdmin: isAdmin),
         if(isAdmin) ActivityLog(key: ValueKey('logs'+version.toString())),
         if(isAdmin) StaffPage(key: ValueKey('staff'+version.toString())),
       ]),
@@ -258,7 +259,8 @@ class _CustomerListState extends State<CustomerList> {
 
 class TransferList extends StatefulWidget {
   final String actor;
-  const TransferList({super.key,required this.actor});
+  final bool isAdmin;
+  const TransferList({super.key,required this.actor, required this.isAdmin});
   @override
   State<TransferList> createState() => _TransferListState();
 }
@@ -282,7 +284,7 @@ class _TransferListState extends State<TransferList> {
         )),
         Expanded(child: s.connectionState == ConnectionState.waiting ? const Center(child: CircularProgressIndicator()) : rows.isEmpty ? const Center(child: Text('لا توجد حوالات مسجلة.')) : ListView.builder(itemCount: rows.length, itemBuilder: (c, i) {
           final r = rows[i];
-          return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const CircleAvatar(child: Icon(Icons.swap_horiz)), title: Text(r['receiver_name'].toString()), subtitle: Text('رقم: ' + r['reference_no'].toString() + '\nمن: ' + r['sender_name'].toString() + ' • ' + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()), isThreeLine: true, onTap: () => transferDetails(context, r, widget.actor)));
+          return Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const CircleAvatar(child: Icon(Icons.swap_horiz)), title: Text(r['receiver_name'].toString()), subtitle: Text('رقم: ' + r['reference_no'].toString() + '\nمن: ' + r['sender_name'].toString() + ' • ' + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()), isThreeLine: true, onTap: () => transferDetails(context, r, widget.actor, widget.isAdmin)));
         })),
       ]);
     },
@@ -360,7 +362,7 @@ Future<void> customerDetails(BuildContext context, Map<String, Object?> c) async
   )));
 }
 
-Future<void> transferDetails(BuildContext context, Map<String, Object?> r, String actor) async {
+Future<void> transferDetails(BuildContext context, Map<String, Object?> r, String actor, bool isAdmin) async {
   await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: Text('حوالة ' + r['reference_no'].toString()),
     content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -368,6 +370,15 @@ Future<void> transferDetails(BuildContext context, Map<String, Object?> r, Strin
       detail('المبلغ', NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString()), detail('الحالة', r['status']), detail('التاريخ', r['transfer_date']), detail('ملاحظات', r['notes']),
     ]),
     actions: [
+      if (isAdmin) TextButton.icon(onPressed: () async {
+        String nextStatus = r['status'].toString();
+        final chosen = await showDialog<String>(context: context, builder: (d) => StatefulBuilder(builder: (d, setChoice) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(title: const Text('تحديث حالة الحوالة'), content: DropdownButtonFormField<String>(value: nextStatus, items: const [DropdownMenuItem(value: 'قيد الانتظار', child: Text('قيد الانتظار')), DropdownMenuItem(value: 'مكتملة', child: Text('مكتملة')), DropdownMenuItem(value: 'ملغاة', child: Text('ملغاة'))], onChanged: (v) => setChoice(() => nextStatus = v ?? nextStatus)), actions: [TextButton(onPressed: () => Navigator.pop(d), child: const Text('إلغاء')), FilledButton(onPressed: () => Navigator.pop(d, nextStatus), child: const Text('حفظ'))]))));
+        if (chosen != null && chosen != r['status']) {
+          await Store.updateTransferStatus(r['id'] as int, chosen);
+          await Store.audit(actor, 'تغيير حالة حوالة', '${r['reference_no']} • ${r['status']} ← $chosen');
+          if (context.mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث حالة الحوالة.'))); }
+        }
+      }, icon: const Icon(Icons.sync), label: const Text('تغيير الحالة')),
       TextButton(onPressed: () async {
         final receipt = 'ALQUOOD REMIT\\nإيصال حوالة\\n----------------------\\nرقم الحوالة: ${r['reference_no']}\\nالمرسل: ${r['sender_name']}\\nالمستلم: ${r['receiver_name']}\\nهاتف المستلم: ${r['receiver_phone'] ?? '—'}\\nالمبلغ: ${NumberFormat('#,##0.##').format(r['amount'])} ${r['currency']}\\nالحالة: ${r['status']}\\nالتاريخ: ${r['transfer_date']}\\nالموظف: $actor\\n----------------------\\nيرجى الاحتفاظ بهذا الإيصال';
         await Clipboard.setData(ClipboardData(text:receipt));
