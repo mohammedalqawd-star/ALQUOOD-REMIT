@@ -56,7 +56,7 @@ class Store {
     for (final t in transfers) {
       out.add([cell('حوالة'),cell(t['id']),cell(t['reference_no']),cell(t['sender_name']),cell(t['receiver_name']),cell(t['receiver_phone']),cell(''),cell(''),cell(t['amount']),cell(t['currency']),cell(t['status']),cell(t['transfer_date']),cell(t['notes'])].join(','));
     }
-    return '\\uFEFF' + out.join('\\n');
+    return '\uFEFF' + out.join('\n');
   }
 }
 
