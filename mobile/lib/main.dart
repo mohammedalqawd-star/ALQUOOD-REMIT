@@ -225,7 +225,7 @@ class _LoginPageState extends State<LoginPage>{
                         width: double.infinity,
                         child: FilledButton(
                           onPressed: busy ? null : () async {
-                            if (username.text.trim().isEmpty || !RegExp(r'^\d{4,} || (setup && name.text.trim().isEmpty)) {
+                            if (username.text.trim().isEmpty || !RegExp(r'^[0-9]{4,}$').hasMatch(pin.text) || (setup && name.text.trim().isEmpty)) {
                               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أكمل البيانات، والرمز لا يقل عن 4 أرقام.')));
                               return;
                             }
@@ -689,10 +689,6 @@ class _StaffPageState extends State<StaffPage> {
   ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
-).hasMatch(pin.text) || (setup && name.text.trim().isEmpty)) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أكمل البيانات، والرمز لا يقل عن 4 أرقام.')));
-                              return;
-                            }
                             setState(() => busy = true);
                             try {
                               if (setup) {
