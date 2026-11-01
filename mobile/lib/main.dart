@@ -20,17 +20,21 @@ class Store {
     final dir = await getDatabasesPath();
     _database = await openDatabase(
       p.join(dir, 'alquood_remit.db'),
-      version: 2,
+      version: 3,
       onCreate: (d, v) async {
         await d.execute('CREATE TABLE customers(id INTEGER PRIMARY KEY AUTOINCREMENT, account_no TEXT UNIQUE, full_name TEXT NOT NULL, phone TEXT, identity_no TEXT, address TEXT, created_at TEXT NOT NULL)');
         await d.execute('CREATE TABLE remittances(id INTEGER PRIMARY KEY AUTOINCREMENT, reference_no TEXT UNIQUE, sender_name TEXT NOT NULL, receiver_name TEXT NOT NULL, receiver_phone TEXT, customer_id INTEGER, amount REAL NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL, transfer_date TEXT NOT NULL, notes TEXT)');
         await d.execute('CREATE TABLE staff(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL, pin_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)');
         await d.execute('CREATE TABLE audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, staff_name TEXT NOT NULL, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL)');
+        await d.execute('CREATE TABLE ledger_entries(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, transfer_id INTEGER, entry_type TEXT NOT NULL, amount REAL NOT NULL, currency TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL)');
       },
       onUpgrade: (d, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await d.execute('CREATE TABLE staff(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL, pin_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)');
           await d.execute('CREATE TABLE audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, staff_name TEXT NOT NULL, action TEXT NOT NULL, details TEXT, created_at TEXT NOT NULL)');
+        }
+        if (oldVersion < 3) {
+          await d.execute('CREATE TABLE ledger_entries(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, transfer_id INTEGER, entry_type TEXT NOT NULL, amount REAL NOT NULL, currency TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL)');
         }
       },
     );
@@ -52,9 +56,55 @@ class Store {
   static Future<List<Map<String,Object?>>> logs() async => (await db).query('audit_logs', orderBy: 'id DESC', limit: 300);
   static Future<void> audit(String actor, String action, String details) async => (await db).insert('audit_logs', {'staff_name': actor, 'action': action, 'details': details, 'created_at': DateTime.now().toIso8601String()});
   static Future<int> addCustomer(Map<String, Object?> row) async => (await db).insert('customers', row);
-  static Future<int> addTransfer(Map<String, Object?> row) async => (await db).insert('remittances', row);
-  static Future<int> updateTransferStatus(int id, String status) async => (await db).update('remittances', {'status': status}, where: 'id=?', whereArgs: [id]);
+  static Future<int> addTransfer(Map<String, Object?> row) async {
+    final d = await db;
+    return d.transaction((txn) async {
+      final id = await txn.insert('remittances', row);
+      if (row['customer_id'] != null) {
+        await txn.insert('ledger_entries', {
+          'customer_id': row['customer_id'], 'transfer_id': id, 'entry_type': 'عليه',
+          'amount': row['amount'], 'currency': row['currency'],
+          'description': 'قيمة حوالة رقم ${row['reference_no']}',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+      return id;
+    });
+  }
+  static Future<int> updateTransferStatus(int id, String status) async {
+    final d = await db;
+    return d.transaction((txn) async {
+      final rows = await txn.query('remittances', where: 'id=?', whereArgs: [id], limit: 1);
+      if (rows.isEmpty) return 0;
+      final old = rows.first;
+      final previous = old['status'].toString();
+      if (previous == status) return 0;
+      if (old['customer_id'] != null && previous != 'ملغاة' && status == 'ملغاة') {
+        await txn.insert('ledger_entries', {
+          'customer_id': old['customer_id'], 'transfer_id': id, 'entry_type': 'له',
+          'amount': old['amount'], 'currency': old['currency'],
+          'description': 'عكس خصم حوالة ملغاة رقم ${old['reference_no']}',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      } else if (old['customer_id'] != null && previous == 'ملغاة' && status != 'ملغاة') {
+        await txn.insert('ledger_entries', {
+          'customer_id': old['customer_id'], 'transfer_id': id, 'entry_type': 'عليه',
+          'amount': old['amount'], 'currency': old['currency'],
+          'description': 'إعادة تسجيل حوالة رقم ${old['reference_no']}',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+      return txn.update('remittances', {'status': status}, where: 'id=?', whereArgs: [id]);
+    });
+  }
   static Future<List<Map<String, Object?>>> statement(int id) async => (await db).query('remittances', where: 'customer_id=?', whereArgs: [id], orderBy: 'id DESC');
+  static Future<List<Map<String, Object?>>> ledger(int id) async => (await db).query('ledger_entries', where: 'customer_id=?', whereArgs: [id], orderBy: 'id DESC');
+  static Future<Map<String, double>> customerBalances(int id) async {
+    final rows = await (await db).rawQuery("SELECT currency, SUM(CASE WHEN entry_type='له' THEN amount ELSE -amount END) AS balance FROM ledger_entries WHERE customer_id=? GROUP BY currency", [id]);
+    return {for (final r in rows) r['currency'].toString(): (r['balance'] as num).toDouble()};
+  }
+  static Future<int> addCustomerCredit(int customerId, double amount, String currency, String description) async =>
+    (await db).insert('ledger_entries', {'customer_id': customerId, 'entry_type': 'له', 'amount': amount, 'currency': currency, 'description': description, 'created_at': DateTime.now().toIso8601String()});
   static Future<int> count(String table) async {
     final r = await (await db).rawQuery('SELECT COUNT(*) AS n FROM ' + table);
     return Sqflite.firstIntValue(r) ?? 0;
@@ -325,6 +375,7 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
       DropdownButtonFormField<String>(value: currency, decoration: const InputDecoration(labelText: 'العملة'), items: const [DropdownMenuItem(value: 'YER', child: Text('ريال يمني YER')), DropdownMenuItem(value: 'SAR', child: Text('ريال سعودي SAR')), DropdownMenuItem(value: 'USD', child: Text('دولار أمريكي USD'))], onChanged: (v) => setLocal(() => currency = v ?? 'YER')),
       const SizedBox(height: 9),
       DropdownButtonFormField<int?>(value: customerId, decoration: const InputDecoration(labelText: 'ربط بملف عميل (اختياري)'), items: [const DropdownMenuItem<int?>(value: null, child: Text('بدون ربط')), ...customers.map((c) => DropdownMenuItem<int?>(value: c['id'] as int, child: Text(c['full_name'].toString())))], onChanged: (v) => setLocal(() => customerId = v)),
+      const Padding(padding: EdgeInsets.only(top: 4), child: Text('عند ربط الحوالة بعميل، يُسجّل مبلغها عليه تلقائيًا في كشف حسابه. إذا لم يكفِ رصيده يظهر المتبقي كدين.', style: TextStyle(fontSize: 12, color: Colors.black54))),
       const SizedBox(height: 9),
       if(isAdmin) DropdownButtonFormField<String>(value: status, decoration: const InputDecoration(labelText: 'الحالة'), items: const [DropdownMenuItem(value: 'قيد الانتظار', child: Text('قيد الانتظار')), DropdownMenuItem(value: 'مكتملة', child: Text('مكتملة')), DropdownMenuItem(value: 'ملغاة', child: Text('ملغاة'))], onChanged: (v) => setLocal(() => status = v ?? 'قيد الانتظار')) else const ListTile(contentPadding:EdgeInsets.zero,leading:Icon(Icons.lock_outline),title:Text('الحالة الافتراضية: قيد الانتظار'),subtitle:Text('اعتماد أو إلغاء الحوالة من صلاحية المدير فقط.')),
       const SizedBox(height: 9), textField(notes, 'ملاحظات'),
@@ -349,16 +400,74 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
 }
 
 Future<void> customerDetails(BuildContext context, Map<String, Object?> c) async {
-  final list = await Store.statement(c['id'] as int);
+  final customerId = c['id'] as int;
+  final ledgerRows = await Store.ledger(customerId);
+  final balances = await Store.customerBalances(customerId);
   if (!context.mounted) return;
   await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
-    title: Text(c['full_name'].toString()),
-    content: SizedBox(width: 420, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    title: Row(children: [const CircleAvatar(child: Icon(Icons.person)), const SizedBox(width: 10), Expanded(child: Text(c['full_name'].toString()))]),
+    content: SizedBox(width: 440, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       detail('رقم الحساب', c['account_no']), detail('الهاتف', c['phone']), detail('الهوية', c['identity_no']), detail('العنوان', c['address']),
-      const Divider(), Text('كشف الحوالات: ' + list.length.toString(), style: const TextStyle(fontWeight: FontWeight.bold)),
-      ...list.map((r) => ListTile(contentPadding: EdgeInsets.zero, title: Text(r['reference_no'].toString() + ' • ' + r['receiver_name'].toString()), subtitle: Text(NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString() + ' • ' + r['status'].toString()))),
+      const Divider(height: 24),
+      const Text('الرصيد الحالي حسب العملة', style: TextStyle(fontWeight: FontWeight.bold)),
+      if (balances.isEmpty) const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text('لا توجد حركات مالية لهذا العميل بعد.')),
+      ...balances.entries.map((e) => Card(color: e.value < 0 ? Colors.red.shade50 : Colors.green.shade50, child: ListTile(
+        dense: true, leading: Icon(e.value < 0 ? Icons.trending_down : Icons.account_balance_wallet, color: e.value < 0 ? Colors.red : Colors.green),
+        title: Text(e.value < 0 ? 'المطلوب من العميل' : 'رصيد العميل له'),
+        subtitle: Text(e.key), trailing: Text(NumberFormat('#,##0.##').format(e.value.abs()), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+      ))),
+      const Divider(height: 24),
+      Text('كشف الحساب • ${ledgerRows.length} حركة', style: const TextStyle(fontWeight: FontWeight.bold)),
+      if (ledgerRows.isEmpty) const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text('لا توجد حركات مسجلة.')),
+      ...ledgerRows.map((r) => ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: CircleAvatar(backgroundColor: r['entry_type'] == 'له' ? Colors.green.shade50 : Colors.red.shade50, child: Icon(r['entry_type'] == 'له' ? Icons.add : Icons.remove, color: r['entry_type'] == 'له' ? Colors.green : Colors.red)),
+        title: Text((r['entry_type'] == 'له' ? 'له ' : 'عليه ') + NumberFormat('#,##0.##').format(r['amount']) + ' ' + r['currency'].toString()),
+        subtitle: Text('${r['description'] ?? 'حركة حساب'}\n${r['created_at']}'),
+        isThreeLine: true,
+      )),
     ]))),
-    actions: [TextButton(onPressed: () => Navigator.pop(x), child: const Text('إغلاق'))],
+    actions: [
+      TextButton.icon(onPressed: () async {
+        Navigator.pop(x);
+        await customerCreditForm(context, c);
+        if (context.mounted) await customerDetails(context, c);
+      }, icon: const Icon(Icons.add_card), label: const Text('إضافة دفعة / رصيد')),
+      TextButton(onPressed: () => Navigator.pop(x), child: const Text('إغلاق')),
+    ],
+  )));
+}
+
+Future<void> customerCreditForm(BuildContext context, Map<String,Object?> customer) async {
+  final amount = TextEditingController();
+  final description = TextEditingController(text: 'دفعة من العميل');
+  String currency = 'YER';
+  await showDialog(context: context, builder: (x) => StatefulBuilder(builder: (x, setLocal) => Directionality(
+    textDirection: ui.TextDirection.rtl,
+    child: AlertDialog(
+      title: Text('تسجيل دفعة • ${customer['full_name']}'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        textField(amount, 'مبلغ الدفعة *', numeric: true),
+        DropdownButtonFormField<String>(value: currency, decoration: const InputDecoration(labelText: 'العملة'), items: const [
+          DropdownMenuItem(value: 'YER', child: Text('ريال يمني YER')),
+          DropdownMenuItem(value: 'SAR', child: Text('ريال سعودي SAR')),
+          DropdownMenuItem(value: 'USD', child: Text('دولار أمريكي USD')),
+        ], onChanged: (v) => setLocal(() => currency = v ?? 'YER')),
+        textField(description, 'البيان / السبب'),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(x), child: const Text('إلغاء')),
+        FilledButton(onPressed: () async {
+          final value = double.tryParse(amount.text.trim());
+          if (value == null || value <= 0) {
+            ScaffoldMessenger.of(x).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صحيحًا أكبر من صفر.')));
+            return;
+          }
+          await Store.addCustomerCredit(customer['id'] as int, value, currency, description.text.trim());
+          if (x.mounted) Navigator.pop(x);
+        }, child: const Text('حفظ الدفعة')),
+      ],
+    ),
   )));
 }
 
