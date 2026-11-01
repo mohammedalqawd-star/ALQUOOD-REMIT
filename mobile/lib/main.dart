@@ -1,3 +1,4 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
@@ -62,7 +63,7 @@ class _MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     final names = ['الرئيسية', 'العملاء', 'الحوالات'];
-    return Directionality(textDirection: TextDirection.rtl, child: Scaffold(
+    return Directionality(textDirection: ui.TextDirection.rtl, child: Scaffold(
       appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [IconButton(onPressed: reload, icon: const Icon(Icons.refresh))]),
       body: IndexedStack(index: page, children: [
         Dashboard(key: ValueKey('home' + version.toString()), go: (v) => setState(() => page = v)),
@@ -177,7 +178,7 @@ Widget textField(TextEditingController c, String label, {bool numeric = false}) 
 
 Future<void> customerForm(BuildContext context) async {
   final name = TextEditingController(), phone = TextEditingController(), identity = TextEditingController(), address = TextEditingController(), account = TextEditingController();
-  await showDialog(context: context, builder: (x) => Directionality(textDirection: TextDirection.rtl, child: AlertDialog(
+  await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: const Text('عميل جديد'),
     content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [textField(name, 'الاسم الكامل *'), textField(phone, 'رقم الهاتف'), textField(identity, 'رقم الهوية'), textField(address, 'العنوان'), textField(account, 'رقم حساب العميل')])),
     actions: [
@@ -199,7 +200,7 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
   final ref = TextEditingController(text: 'TR-' + DateTime.now().millisecondsSinceEpoch.toString()), sender = TextEditingController(), receiver = TextEditingController(), phone = TextEditingController(), amount = TextEditingController(), notes = TextEditingController();
   int? customerId;
   String currency = 'YER', status = 'قيد الانتظار';
-  await showDialog(context: context, builder: (x) => StatefulBuilder(builder: (x, setLocal) => Directionality(textDirection: TextDirection.rtl, child: AlertDialog(
+  await showDialog(context: context, builder: (x) => StatefulBuilder(builder: (x, setLocal) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: const Text('حوالة جديدة'),
     content: SizedBox(width: 420, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
       textField(ref, 'رقم الحوالة *'), textField(sender, 'اسم المرسل *'), textField(receiver, 'اسم المستلم *'), textField(phone, 'هاتف المستلم'), textField(amount, 'المبلغ *', numeric: true),
@@ -231,7 +232,7 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
 Future<void> customerDetails(BuildContext context, Map<String, Object?> c) async {
   final list = await Store.statement(c['id'] as int);
   if (!context.mounted) return;
-  await showDialog(context: context, builder: (x) => Directionality(textDirection: TextDirection.rtl, child: AlertDialog(
+  await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: Text(c['full_name'].toString()),
     content: SizedBox(width: 420, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       detail('رقم الحساب', c['account_no']), detail('الهاتف', c['phone']), detail('الهوية', c['identity_no']), detail('العنوان', c['address']),
@@ -243,7 +244,7 @@ Future<void> customerDetails(BuildContext context, Map<String, Object?> c) async
 }
 
 Future<void> transferDetails(BuildContext context, Map<String, Object?> r) async {
-  await showDialog(context: context, builder: (x) => Directionality(textDirection: TextDirection.rtl, child: AlertDialog(
+  await showDialog(context: context, builder: (x) => Directionality(textDirection: ui.TextDirection.rtl, child: AlertDialog(
     title: Text('حوالة ' + r['reference_no'].toString()),
     content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
       detail('المرسل', r['sender_name']), detail('المستلم', r['receiver_name']), detail('هاتف المستلم', r['receiver_phone']),
