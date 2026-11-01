@@ -47,6 +47,7 @@ class Store {
     return rows.isEmpty ? null : rows.first;
   }
   static Future<List<Map<String,Object?>>> staff() async => (await db).query('staff', orderBy: 'id');
+  static Future<void> setStaffActive(int id, bool active) async => (await db).update('staff', {'active':active?1:0}, where:'id=?', whereArgs:[id]);
   static Future<List<Map<String,Object?>>> logs() async => (await db).query('audit_logs', orderBy: 'id DESC', limit: 300);
   static Future<void> audit(String actor, String action, String details) async => (await db).insert('audit_logs', {'staff_name': actor, 'action': action, 'details': details, 'created_at': DateTime.now().toIso8601String()});
   static Future<int> addCustomer(Map<String, Object?> row) async => (await db).insert('customers', row);
@@ -152,14 +153,14 @@ class _MainPageState extends State<MainPage> {
   }
   @override
   Widget build(BuildContext context) {
-    final names = ['الرئيسية', 'العملاء', 'الحوالات', 'سجل النشاط', if(isAdmin) 'الموظفون'];
+    final names = ['الرئيسية', 'العملاء', 'الحوالات', if(isAdmin) 'سجل النشاط', if(isAdmin) 'الموظفون'];
     return Directionality(textDirection: ui.TextDirection.rtl, child: Scaffold(
       appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('ALQUOOD REMIT', style: TextStyle(fontWeight: FontWeight.bold)), Text(names[page], style: const TextStyle(fontSize: 12, color: Colors.white70))]), actions: [if(isAdmin) IconButton(tooltip: 'نسخ نسخة احتياطية', onPressed: copyBackup, icon: const Icon(Icons.backup_outlined)), IconButton(tooltip: 'تحديث', onPressed: reload, icon: const Icon(Icons.refresh)), IconButton(tooltip:'خروج',onPressed:widget.onLogout,icon:const Icon(Icons.logout))]),
       body: IndexedStack(index: page, children: [
         Dashboard(key: ValueKey('home' + version.toString()), go: (v) => setState(() => page = v)),
         CustomerList(key: ValueKey('customers' + version.toString())),
         TransferList(key: ValueKey('transfers' + version.toString()), actor: widget.user['full_name'].toString()),
-        ActivityLog(key: ValueKey('logs'+version.toString())),
+        if(isAdmin) ActivityLog(key: ValueKey('logs'+version.toString())),
         if(isAdmin) StaffPage(key: ValueKey('staff'+version.toString())),
       ]),
       floatingActionButton: (page == 1 || page == 2) ? FloatingActionButton.extended(
@@ -169,7 +170,7 @@ class _MainPageState extends State<MainPage> {
           } else {
             final cs = await Store.customers();
             if (!context.mounted) return;
-            await transferForm(context, cs, widget.user['full_name'].toString());
+            await transferForm(context, cs, widget.user['full_name'].toString(), isAdmin);
           }
           reload();
         },
@@ -180,7 +181,7 @@ class _MainPageState extends State<MainPage> {
         const NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'الرئيسية'),
         const NavigationDestination(icon: Icon(Icons.people_outline), label: 'العملاء'),
         const NavigationDestination(icon: Icon(Icons.swap_horiz), label: 'الحوالات'),
-        const NavigationDestination(icon: Icon(Icons.history), label: 'السجل'),
+        if(isAdmin) const NavigationDestination(icon: Icon(Icons.history), label: 'السجل'),
         if(isAdmin) const NavigationDestination(icon: Icon(Icons.admin_panel_settings), label: 'الموظفون'),
       ]),
     ));
@@ -311,7 +312,7 @@ Future<void> customerForm(BuildContext context, String actor) async {
   )));
 }
 
-Future<void> transferForm(BuildContext context, List<Map<String, Object?>> customers, String actor) async {
+Future<void> transferForm(BuildContext context, List<Map<String, Object?>> customers, String actor, bool isAdmin) async {
   final ref = TextEditingController(text: 'TR-' + DateTime.now().millisecondsSinceEpoch.toString()), sender = TextEditingController(), receiver = TextEditingController(), phone = TextEditingController(), amount = TextEditingController(), notes = TextEditingController();
   int? customerId;
   String currency = 'YER', status = 'قيد الانتظار';
@@ -323,7 +324,7 @@ Future<void> transferForm(BuildContext context, List<Map<String, Object?>> custo
       const SizedBox(height: 9),
       DropdownButtonFormField<int?>(value: customerId, decoration: const InputDecoration(labelText: 'ربط بملف عميل (اختياري)'), items: [const DropdownMenuItem<int?>(value: null, child: Text('بدون ربط')), ...customers.map((c) => DropdownMenuItem<int?>(value: c['id'] as int, child: Text(c['full_name'].toString())))], onChanged: (v) => setLocal(() => customerId = v)),
       const SizedBox(height: 9),
-      DropdownButtonFormField<String>(value: status, decoration: const InputDecoration(labelText: 'الحالة'), items: const [DropdownMenuItem(value: 'قيد الانتظار', child: Text('قيد الانتظار')), DropdownMenuItem(value: 'مكتملة', child: Text('مكتملة')), DropdownMenuItem(value: 'ملغاة', child: Text('ملغاة'))], onChanged: (v) => setLocal(() => status = v ?? 'قيد الانتظار')),
+      if(isAdmin) DropdownButtonFormField<String>(value: status, decoration: const InputDecoration(labelText: 'الحالة'), items: const [DropdownMenuItem(value: 'قيد الانتظار', child: Text('قيد الانتظار')), DropdownMenuItem(value: 'مكتملة', child: Text('مكتملة')), DropdownMenuItem(value: 'ملغاة', child: Text('ملغاة'))], onChanged: (v) => setLocal(() => status = v ?? 'قيد الانتظار')) else const ListTile(contentPadding:EdgeInsets.zero,leading:Icon(Icons.lock_outline),title:Text('الحالة الافتراضية: قيد الانتظار'),subtitle:Text('اعتماد أو إلغاء الحوالة من صلاحية المدير فقط.')),
       const SizedBox(height: 9), textField(notes, 'ملاحظات'),
     ]))),
     actions: [
@@ -406,7 +407,7 @@ class _StaffPageState extends State<StaffPage>{
   }
   @override Widget build(BuildContext context)=>Column(children:[
     Padding(padding:const EdgeInsets.all(12),child:FilledButton.icon(onPressed:add,icon:const Icon(Icons.person_add),label:const Text('إضافة موظف'))),
-    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}')))).toList());}))
+    Expanded(child:FutureBuilder<List<Map<String,Object?>>>(key:ValueKey(refresh),future:Store.staff(),builder:(c,s){final rows=s.data??[];return ListView(children:rows.map((r)=>Card(child:ListTile(leading:Icon(r['role']=='مدير'?Icons.admin_panel_settings:Icons.person),title:Text(r['full_name'].toString()),subtitle:Text('${r['username']} • ${r['role']} • ${(r['active'] as int)==1?'نشط':'موقوف'}'),trailing:IconButton(icon:Icon((r['active'] as int)==1?Icons.pause_circle_outline:Icons.play_circle_outline),tooltip:(r['active'] as int)==1?'إيقاف الحساب':'تفعيل الحساب',onPressed:()async{final active=(r['active'] as int)!=1;await Store.setStaffActive(r['id'] as int,active);await Store.audit('المدير',active?'تفعيل مستخدم':'إيقاف مستخدم',r['username'].toString());if(mounted)setState(()=>refresh++);}))))).toList());}))
   ]);
 }
 Widget detail(String label, Object? value) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(label + ': ' + ((value == null || value.toString().isEmpty) ? '—' : value.toString())));
