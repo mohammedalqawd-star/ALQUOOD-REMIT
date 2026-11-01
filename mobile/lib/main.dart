@@ -36,6 +36,7 @@ class Store {
         if (oldVersion < 3) {
           await d.execute('CREATE TABLE ledger_entries(id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, transfer_id INTEGER, entry_type TEXT NOT NULL, amount REAL NOT NULL, currency TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL)');
         }
+          await d.execute("INSERT INTO ledger_entries(customer_id, transfer_id, entry_type, amount, currency, description, created_at) SELECT customer_id, id, 'عليه', amount, currency, 'قيمة حوالة رقم ' || reference_no, transfer_date FROM remittances WHERE customer_id IS NOT NULL AND status != 'ملغاة'");
       },
     );
     return _database!;
@@ -60,7 +61,7 @@ class Store {
     final d = await db;
     return d.transaction((txn) async {
       final id = await txn.insert('remittances', row);
-      if (row['customer_id'] != null) {
+      if (row['customer_id'] != null && row['status'] != 'ملغاة') {
         await txn.insert('ledger_entries', {
           'customer_id': row['customer_id'], 'transfer_id': id, 'entry_type': 'عليه',
           'amount': row['amount'], 'currency': row['currency'],
